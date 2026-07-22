@@ -1025,9 +1025,11 @@ img {
 }
 
 .contact-item {
+  display: block;
   min-height: 170px;
   padding: 24px 28px 28px 0;
   border-bottom: 1px solid rgba(250, 248, 243, 0.2);
+  transition: color 0.22s, background 0.22s, padding 0.22s;
 }
 
 .contact-item:first-child {
@@ -1049,6 +1051,14 @@ img {
   font-family: var(--serif);
   font-size: clamp(25px, 2.5vw, 38px);
   line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.contact-item p span {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 0.52em;
+  transition: transform 0.22s;
 }
 
 .contact-item small {
@@ -1059,8 +1069,13 @@ img {
   letter-spacing: 0.06em;
 }
 
-.contact-pending p {
-  color: rgba(250, 248, 243, 0.68);
+.contact-item:hover {
+  padding-left: 18px;
+  background: rgba(250, 248, 243, 0.06);
+}
+
+.contact-item:hover p span {
+  transform: translate(4px, -4px);
 }
 
 .footer {
