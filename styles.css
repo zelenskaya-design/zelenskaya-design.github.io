@@ -1025,6 +1025,7 @@ img {
 }
 
 .contact-item {
+  position: relative;
   display: block;
   min-height: 170px;
   padding: 24px 28px 28px 0;
@@ -1061,12 +1062,45 @@ img {
   transition: transform 0.22s;
 }
 
+.contact-primary {
+  display: block;
+}
+
 .contact-item small {
   display: block;
   margin-top: 14px;
   color: #c2ab95;
   font-size: 10px;
   letter-spacing: 0.06em;
+}
+
+.copy-email {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  margin-top: 18px;
+  padding: 8px 0;
+  border: 0;
+  color: var(--paper-light);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.copy-email:hover,
+.copy-email:focus-visible,
+.copy-email.is-copied {
+  color: #c2ab95;
+}
+
+.copy-email > span:last-child {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .contact-item:hover {

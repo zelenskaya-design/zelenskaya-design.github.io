@@ -176,6 +176,7 @@ const galleryTotal = document.querySelector("#gallery-total");
 const galleryPrev = document.querySelector(".gallery-prev");
 const galleryNext = document.querySelector(".gallery-next");
 const galleryClose = document.querySelector(".gallery-close");
+const copyEmailButton = document.querySelector(".copy-email");
 
 let activeProject = null;
 let activeIndex = 0;
@@ -198,6 +199,54 @@ navigation.querySelectorAll("a").forEach((link) => {
 window.addEventListener("resize", () => {
   if (window.innerWidth > 960) setMenu(false);
 });
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  document.body.append(textArea);
+  textArea.focus({ preventScroll: true });
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    textArea.remove();
+  }
+  if (!copied) throw new Error("Copy command failed");
+}
+
+if (copyEmailButton) {
+  const label = copyEmailButton.querySelector(".copy-email-label");
+  let resetTimer;
+
+  copyEmailButton.addEventListener("click", async () => {
+    clearTimeout(resetTimer);
+
+    try {
+      await copyText(copyEmailButton.dataset.email);
+      label.textContent = "E-mail скопирован";
+      copyEmailButton.classList.add("is-copied");
+    } catch {
+      label.textContent = "Не удалось — выделите адрес";
+      copyEmailButton.classList.remove("is-copied");
+    }
+
+    resetTimer = window.setTimeout(() => {
+      label.textContent = "Скопировать e-mail";
+      copyEmailButton.classList.remove("is-copied");
+    }, 2400);
+  });
+}
 
 function normalizedImage(project, index) {
   const image = project.images[index];
