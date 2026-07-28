@@ -232,6 +232,8 @@ let modalAnimationToken = 0;
 let slideAnimations = [];
 let slideOverlay = null;
 let slideTransitionToken = 0;
+let queuedSlide = null;
+const galleryImageCache = new Map();
 let galleryOriginTransform = "translate3d(0, 8px, 0) scale(0.985)";
 let lockedScrollBehavior = "";
 const bodyLocks = new Set();
@@ -454,33 +456,113 @@ function renderGallery({ updateImage = true } = {}) {
   });
 }
 
-function cancelSlideAnimations() {
+function cancelSlideAnimations({ clearQueue = true } = {}) {
   slideTransitionToken += 1;
   slideAnimations.forEach((animation) => animation.cancel());
   slideAnimations = [];
   slideOverlay?.remove();
   slideOverlay = null;
+  if (clearQueue) queuedSlide = null;
   galleryImage.style.removeProperty("opacity");
+  galleryImage.style.removeProperty("filter");
   galleryImage.style.removeProperty("transform");
 }
 
-function waitForImage(image) {
-  if (image.complete) {
-    return image.naturalWidth > 0 ? Promise.resolve() : Promise.reject(new Error("Image failed"));
+function settleSlideForDirectManipulation() {
+  if (!slideOverlay || !activeProject) {
+    cancelSlideAnimations();
+    return;
   }
 
-  return new Promise((resolve, reject) => {
-    image.addEventListener("load", resolve, { once: true });
-    image.addEventListener("error", () => reject(new Error("Image failed")), { once: true });
-  });
+  const image = normalizedImage(projects[activeProject], activeIndex);
+  slideAnimations.forEach((animation) => animation.cancel());
+  galleryImage.src = image.src;
+  galleryImage.alt = image.alt;
+  cancelSlideAnimations();
+}
+
+function prepareGalleryImage(src) {
+  if (galleryImageCache.has(src)) return galleryImageCache.get(src);
+
+  const image = new Image();
+  image.decoding = "async";
+  image.src = src;
+
+  const ready = (image.complete && image.naturalWidth > 0
+    ? Promise.resolve()
+    : new Promise((resolve, reject) => {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", () => reject(new Error("Image failed")), { once: true });
+      })
+  )
+    .then(() => image.decode?.().catch(() => {}))
+    .then(() => undefined)
+    .catch((error) => {
+      galleryImageCache.delete(src);
+      throw error;
+    });
+
+  galleryImageCache.set(src, ready);
+  return ready;
+}
+
+function preloadProjectImages(project, active = 0) {
+  const count = project.images.length;
+  const prioritized = [
+    active,
+    (active + 1) % count,
+    (active - 1 + count) % count,
+    ...project.images.map((_, index) => index),
+  ];
+  const unique = [...new Set(prioritized)];
+
+  const preload = () => {
+    unique.forEach((index) => {
+      const image = normalizedImage(project, index);
+      void prepareGalleryImage(image.src).catch(() => {});
+    });
+  };
+
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(preload, { timeout: 700 });
+  } else {
+    window.setTimeout(preload, 0);
+  }
+}
+
+function galleryRevealFrames(direction) {
+  const fromEdge = direction > 0 ? "inset(0 0 0 100%)" : "inset(0 100% 0 0)";
+  const distance = Math.min(Math.max(galleryStage.clientWidth * 0.026, 16), 34);
+
+  return [
+    {
+      clipPath: fromEdge,
+      filter: "blur(1.2px)",
+      transform: `translate3d(${direction * distance}px, 0, 0) scale(1.035)`,
+    },
+    {
+      clipPath: "inset(0 0 0 0)",
+      filter: "blur(0)",
+      transform: "translate3d(0, 0, 0) scale(1)",
+    },
+  ];
 }
 
 function showSlide(
   index,
   { direction = 1, animate = true } = {},
 ) {
+  if (slideOverlay) {
+    if (index === activeIndex) {
+      queuedSlide = null;
+      return;
+    }
+    queuedSlide = { index, direction, animate };
+    return;
+  }
+
   if (index === activeIndex) return;
-  cancelSlideAnimations();
+  cancelSlideAnimations({ clearQueue: false });
   const token = slideTransitionToken;
   const previousIndex = activeIndex;
   const image = normalizedImage(projects[activeProject], index);
@@ -498,44 +580,62 @@ function showSlide(
   activeIndex = index;
   renderGallery({ updateImage: false });
 
-  void waitForImage(incoming)
+  void prepareGalleryImage(image.src)
     .then(async () => {
-      await incoming.decode?.().catch(() => {});
       if (token !== slideTransitionToken || slideOverlay !== incoming) return;
 
+      incoming.src = image.src;
       incoming.style.visibility = "visible";
       if (!animate || !incoming.animate || reduceMotion.matches) {
         galleryImage.src = image.src;
         galleryImage.alt = image.alt;
-        cancelSlideAnimations();
+        await galleryImage.decode?.().catch(() => {});
+        cancelSlideAnimations({ clearQueue: false });
+        const next = queuedSlide;
+        queuedSlide = null;
+        if (next && next.index !== activeIndex) showSlide(next.index, next);
         return;
       }
 
-      const distance = Math.min(Math.max(galleryStage.clientWidth * 0.035, 18), 42);
       const incomingAnimation = incoming.animate(
-        [
-          {
-            filter: "blur(1.5px)",
-            transform: `translate3d(${direction * distance}px, 0, 0) scale(1.06)`,
-          },
-          {
-            filter: "blur(0)",
-            transform: "translate3d(0, 0, 0) scale(1)",
-          },
-        ],
+        galleryRevealFrames(direction),
         {
-          duration: 360,
-          easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+          duration: 560,
+          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
           fill: "both",
         },
       );
-      slideAnimations = [incomingAnimation];
-      await incomingAnimation.finished.catch(() => {});
+      const outgoingAnimation = galleryImage.animate(
+        [
+          {
+            filter: "brightness(1) saturate(1)",
+            transform: "translate3d(0, 0, 0) scale(1)",
+          },
+          {
+            filter: "brightness(0.78) saturate(0.92)",
+            transform: `translate3d(${-direction * 12}px, 0, 0) scale(0.992)`,
+          },
+        ],
+        {
+          duration: 560,
+          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          fill: "both",
+        },
+      );
+      slideAnimations = [incomingAnimation, outgoingAnimation];
+      await Promise.allSettled([incomingAnimation.finished, outgoingAnimation.finished]);
       if (token !== slideTransitionToken || slideOverlay !== incoming) return;
 
       galleryImage.src = image.src;
       galleryImage.alt = image.alt;
-      cancelSlideAnimations();
+      await galleryImage.decode?.().catch(() => {});
+      cancelSlideAnimations({ clearQueue: false });
+
+      const next = queuedSlide;
+      queuedSlide = null;
+      if (next && next.index !== activeIndex) {
+        showSlide(next.index, next);
+      }
     })
     .catch(() => {
       if (token !== slideTransitionToken || slideOverlay !== incoming) return;
@@ -567,6 +667,7 @@ function buildThumbnails(project) {
     });
     galleryThumbnails.append(button);
   });
+  preloadProjectImages(project, activeIndex);
 }
 
 function cancelModalAnimations() {
@@ -640,7 +741,7 @@ async function closeGallery({ animate = true } = {}) {
   const galleryOpacity = getComputedStyle(gallery).opacity;
   const layoutStyle = getComputedStyle(galleryLayout);
   cancelModalAnimations();
-  cancelSlideAnimations();
+  settleSlideForDirectManipulation();
 
   if (animate && gallery.animate) {
     const reduced = reduceMotion.matches;
@@ -673,7 +774,8 @@ async function closeGallery({ animate = true } = {}) {
 
 function changeSlide(delta, { animate = true } = {}) {
   const count = projects[activeProject].images.length;
-  const nextIndex = (activeIndex + delta + count) % count;
+  const currentTarget = queuedSlide?.index ?? activeIndex;
+  const nextIndex = (currentTarget + delta + count) % count;
   showSlide(nextIndex, { direction: Math.sign(delta), animate });
 }
 
@@ -785,7 +887,7 @@ galleryStage.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  cancelSlideAnimations();
+  settleSlideForDirectManipulation();
   galleryDrag.pointerId = event.pointerId;
   galleryDrag.startX = event.clientX;
   galleryDrag.currentX = event.clientX;
