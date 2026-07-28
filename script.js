@@ -1,7 +1,7 @@
 const projects = {
   morena: {
     number: "01",
-    kicker: "Дизайн-концепция мест общего пользования",
+    kicker: "Дизайн-проект мест общего пользования",
     title: "ЖК «Морена»",
     meta: ["Светлогорск", "Места общего пользования"],
     description:
@@ -35,7 +35,7 @@ const projects = {
   },
   viridian: {
     number: "02",
-    kicker: "Дизайн-концепция мест общего пользования",
+    kicker: "Дизайн-проект мест общего пользования",
     title: "ЖК «Виридиан»",
     meta: ["Большое Исаково", "Места общего пользования"],
     description:
@@ -178,12 +178,14 @@ const body = document.body;
 const pageMain = document.querySelector("main");
 const footer = document.querySelector(".footer");
 const brand = document.querySelector(".brand");
+const siteHeader = document.querySelector(".site-header");
 const menuToggle = document.querySelector(".menu-toggle");
 const navigation = document.querySelector(".site-navigation");
 const hero = document.querySelector(".hero");
+const heroStage = document.querySelector(".hero-stage");
 const floatingContact = document.querySelector(".floating-contact");
 const gallery = document.querySelector("#project-gallery");
-const galleryShell = document.querySelector(".gallery-shell");
+const galleryLayout = document.querySelector(".gallery-layout");
 const galleryStage = document.querySelector(".gallery-stage");
 const galleryImage = document.querySelector("#gallery-image");
 const galleryTitle = document.querySelector("#gallery-title");
@@ -200,6 +202,24 @@ const galleryNext = document.querySelector(".gallery-next");
 const galleryClose = document.querySelector(".gallery-close");
 const copyEmailButton = document.querySelector(".copy-email");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const currentParams = new URLSearchParams(window.location.search);
+let parentForcesMotion = false;
+
+try {
+  parentForcesMotion =
+    window.parent !== window &&
+    new URLSearchParams(window.parent.location.search).get("motion") === "full";
+} catch {
+  // The standalone preview can be embedded cross-origin without breaking motion setup.
+}
+
+const forceMotion =
+  document.documentElement.classList.contains("motion-force") ||
+  currentParams.get("motion") === "full" ||
+  parentForcesMotion;
+
+document.documentElement.classList.toggle("motion-force", forceMotion);
+document.documentElement.dataset.motionRuntime = "initializing";
 
 let activeProject = null;
 let activeIndex = 0;
@@ -211,12 +231,25 @@ let modalAnimations = [];
 let modalAnimationToken = 0;
 let slideAnimations = [];
 let slideOverlay = null;
+let slideTransitionToken = 0;
+let galleryOriginTransform = "translate3d(0, 8px, 0) scale(0.985)";
+let lockedScrollBehavior = "";
 const bodyLocks = new Set();
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function rubberband(distance, dimension, constant = 0.42) {
+  return (distance * dimension * constant) / (dimension + constant * Math.abs(distance));
+}
 
 function lockBody(reason) {
   if (bodyLocks.has(reason)) return;
   if (bodyLocks.size === 0) {
     lockedScrollY = window.scrollY;
+    lockedScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
     body.style.position = "fixed";
     body.style.top = `-${lockedScrollY}px`;
     body.style.width = "100%";
@@ -227,10 +260,14 @@ function lockBody(reason) {
 function unlockBody(reason) {
   bodyLocks.delete(reason);
   if (bodyLocks.size !== 0) return;
+  const restoreY = lockedScrollY;
   body.style.position = "";
   body.style.top = "";
   body.style.width = "";
-  window.scrollTo(0, lockedScrollY);
+  window.scrollTo({ top: restoreY, left: 0, behavior: "instant" });
+  window.requestAnimationFrame(() => {
+    document.documentElement.style.scrollBehavior = lockedScrollBehavior;
+  });
 }
 
 function setPageInert(inert) {
@@ -418,6 +455,7 @@ function renderGallery({ updateImage = true } = {}) {
 }
 
 function cancelSlideAnimations() {
+  slideTransitionToken += 1;
   slideAnimations.forEach((animation) => animation.cancel());
   slideAnimations = [];
   slideOverlay?.remove();
@@ -426,58 +464,85 @@ function cancelSlideAnimations() {
   galleryImage.style.removeProperty("transform");
 }
 
-function showSlide(index, { direction = 1, animate = true } = {}) {
-  if (index === activeIndex) return;
-  cancelSlideAnimations();
-
-  const outgoing = galleryImage.cloneNode();
-  outgoing.removeAttribute("id");
-  outgoing.className = "gallery-slide-outgoing";
-  outgoing.alt = "";
-  outgoing.setAttribute("aria-hidden", "true");
-  galleryStage.insertBefore(outgoing, galleryPrev);
-  slideOverlay = outgoing;
-
-  activeIndex = index;
-  const image = normalizedImage(projects[activeProject], activeIndex);
-  galleryImage.src = image.src;
-  galleryImage.alt = image.alt;
-  renderGallery({ updateImage: false });
-
-  if (!animate || !galleryImage.animate) {
-    cancelSlideAnimations();
-    return;
+function waitForImage(image) {
+  if (image.complete) {
+    return image.naturalWidth > 0 ? Promise.resolve() : Promise.reject(new Error("Image failed"));
   }
 
-  const reduced = reduceMotion.matches;
-  const distance = reduced ? 0 : 8;
-  const outgoingAnimation = outgoing.animate(
-    [
-      { opacity: 1, transform: "translateX(0)" },
-      { opacity: 0, transform: `translateX(${-direction * distance}px)` },
-    ],
-    {
-      duration: reduced ? 160 : 120,
-      easing: "cubic-bezier(0.77, 0, 0.175, 1)",
-      fill: "forwards",
-    },
-  );
-  const incomingAnimation = galleryImage.animate(
-    [
-      { opacity: 0, transform: `translateX(${direction * distance}px)` },
-      { opacity: 1, transform: "translateX(0)" },
-    ],
-    {
-      duration: reduced ? 160 : 170,
-      easing: "cubic-bezier(0.23, 1, 0.32, 1)",
-      fill: "both",
-    },
-  );
-  slideAnimations = [outgoingAnimation, incomingAnimation];
-  Promise.allSettled(slideAnimations.map((animation) => animation.finished)).then(() => {
-    if (slideOverlay !== outgoing) return;
-    cancelSlideAnimations();
+  return new Promise((resolve, reject) => {
+    image.addEventListener("load", resolve, { once: true });
+    image.addEventListener("error", () => reject(new Error("Image failed")), { once: true });
   });
+}
+
+function showSlide(
+  index,
+  { direction = 1, animate = true } = {},
+) {
+  if (index === activeIndex) return;
+  cancelSlideAnimations();
+  const token = slideTransitionToken;
+  const previousIndex = activeIndex;
+  const image = normalizedImage(projects[activeProject], index);
+
+  const incoming = galleryImage.cloneNode();
+  incoming.removeAttribute("id");
+  incoming.className = "gallery-slide-incoming";
+  incoming.src = image.src;
+  incoming.alt = "";
+  incoming.setAttribute("aria-hidden", "true");
+  incoming.style.visibility = "hidden";
+  galleryStage.insertBefore(incoming, galleryPrev);
+  slideOverlay = incoming;
+
+  activeIndex = index;
+  renderGallery({ updateImage: false });
+
+  void waitForImage(incoming)
+    .then(async () => {
+      await incoming.decode?.().catch(() => {});
+      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
+
+      incoming.style.visibility = "visible";
+      if (!animate || !incoming.animate || reduceMotion.matches) {
+        galleryImage.src = image.src;
+        galleryImage.alt = image.alt;
+        cancelSlideAnimations();
+        return;
+      }
+
+      const distance = Math.min(Math.max(galleryStage.clientWidth * 0.035, 18), 42);
+      const incomingAnimation = incoming.animate(
+        [
+          {
+            filter: "blur(1.5px)",
+            transform: `translate3d(${direction * distance}px, 0, 0) scale(1.06)`,
+          },
+          {
+            filter: "blur(0)",
+            transform: "translate3d(0, 0, 0) scale(1)",
+          },
+        ],
+        {
+          duration: 360,
+          easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+          fill: "both",
+        },
+      );
+      slideAnimations = [incomingAnimation];
+      await incomingAnimation.finished.catch(() => {});
+      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
+
+      galleryImage.src = image.src;
+      galleryImage.alt = image.alt;
+      cancelSlideAnimations();
+    })
+    .catch(() => {
+      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
+      activeIndex = previousIndex;
+      renderGallery({ updateImage: false });
+      cancelSlideAnimations();
+    });
 }
 
 function buildThumbnails(project) {
@@ -491,7 +556,8 @@ function buildThumbnails(project) {
     button.setAttribute("aria-label", `Открыть изображение ${index + 1}`);
     thumbnail.src = image.src;
     thumbnail.alt = "";
-    thumbnail.loading = "lazy";
+    thumbnail.loading = "eager";
+    thumbnail.decoding = "async";
     button.append(thumbnail);
     button.addEventListener("click", (event) => {
       showSlide(index, {
@@ -508,6 +574,28 @@ function cancelModalAnimations() {
   modalAnimations = [];
 }
 
+function setGalleryOrigin(opener) {
+  if (!opener || reduceMotion.matches) {
+    galleryOriginTransform = "translate3d(0, 8px, 0) scale(0.985)";
+    galleryLayout.style.transformOrigin = "50% 50%";
+    return;
+  }
+
+  const source = opener.getBoundingClientRect();
+  const layout = galleryLayout.getBoundingClientRect();
+  const sourceX = source.left + source.width / 2;
+  const sourceY = source.top + source.height / 2;
+  const layoutX = layout.left + layout.width / 2;
+  const layoutY = layout.top + layout.height / 2;
+  const offsetX = clamp((sourceX - layoutX) * 0.08, -42, 42);
+  const offsetY = clamp((sourceY - layoutY) * 0.08, -42, 42);
+  const originX = clamp(sourceX - layout.left, 0, layout.width);
+  const originY = clamp(sourceY - layout.top, 0, layout.height);
+
+  galleryOriginTransform = `translate3d(${offsetX}px, ${offsetY}px, 0) scale(0.955)`;
+  galleryLayout.style.transformOrigin = `${originX}px ${originY}px`;
+}
+
 function openGallery(projectKey, { opener = null, animate = true } = {}) {
   setMenu(false, { animate: false, returnFocus: false });
   galleryOpener = opener;
@@ -518,6 +606,7 @@ function openGallery(projectKey, { opener = null, animate = true } = {}) {
   gallery.showModal();
   body.classList.add("is-gallery-open");
   lockBody("gallery");
+  setGalleryOrigin(opener);
   galleryClose.focus({ preventScroll: true });
 
   if (!animate || !gallery.animate) return;
@@ -525,20 +614,20 @@ function openGallery(projectKey, { opener = null, animate = true } = {}) {
   const reduced = reduceMotion.matches;
   modalAnimations = [
     gallery.animate([{ opacity: 0 }, { opacity: 1 }], {
-      duration: reduced ? 160 : 260,
-      easing: "cubic-bezier(0.23, 1, 0.32, 1)",
+      duration: reduced ? 160 : 340,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
     }),
-    galleryShell.animate(
+    galleryLayout.animate(
       [
         {
           opacity: reduced ? 0 : 1,
-          transform: reduced ? "none" : "translateY(6px) scale(0.985)",
+          transform: reduced ? "none" : galleryOriginTransform,
         },
-        { opacity: 1, transform: "translateY(0) scale(1)" },
+        { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
       ],
       {
-        duration: reduced ? 160 : 260,
-        easing: "cubic-bezier(0.23, 1, 0.32, 1)",
+        duration: reduced ? 160 : 480,
+        easing: "cubic-bezier(0.16, 1, 0.3, 1)",
       },
     ),
   ];
@@ -548,27 +637,29 @@ async function closeGallery({ animate = true } = {}) {
   if (!gallery.open) return;
   modalAnimationToken += 1;
   const token = modalAnimationToken;
+  const galleryOpacity = getComputedStyle(gallery).opacity;
+  const layoutStyle = getComputedStyle(galleryLayout);
   cancelModalAnimations();
   cancelSlideAnimations();
 
   if (animate && gallery.animate) {
     const reduced = reduceMotion.matches;
     modalAnimations = [
-      gallery.animate([{ opacity: 1 }, { opacity: 0 }], {
-        duration: reduced ? 160 : 200,
+      gallery.animate([{ opacity: galleryOpacity }, { opacity: 0 }], {
+        duration: reduced ? 160 : 240,
         easing: "cubic-bezier(0.77, 0, 0.175, 1)",
         fill: "forwards",
       }),
-      galleryShell.animate(
+      galleryLayout.animate(
         [
-          { opacity: 1, transform: "translateY(0) scale(1)" },
+          { opacity: layoutStyle.opacity, transform: layoutStyle.transform },
           {
-            opacity: reduced ? 0 : 1,
-            transform: reduced ? "none" : "translateY(6px) scale(0.985)",
+            opacity: 0,
+            transform: reduced ? "none" : "translate3d(0, 0, 0) scale(0.992)",
           },
         ],
         {
-          duration: reduced ? 160 : 200,
+          duration: reduced ? 140 : 210,
           easing: "cubic-bezier(0.77, 0, 0.175, 1)",
           fill: "forwards",
         },
@@ -592,6 +683,20 @@ document.querySelectorAll("[data-project]").forEach((button) => {
   button.addEventListener("click", (event) =>
     openGallery(projectKey, { opener: button, animate: event.detail !== 0 }),
   );
+
+  if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
+    button.addEventListener("pointermove", (event) => {
+      const rect = button.getBoundingClientRect();
+      const offsetX = ((event.clientX - rect.left) / rect.width - 0.5) * 30;
+      const offsetY = ((event.clientY - rect.top) / rect.height - 0.5) * 30;
+      button.style.setProperty("--pointer-x", `${offsetX.toFixed(2)}px`);
+      button.style.setProperty("--pointer-y", `${offsetY.toFixed(2)}px`);
+    });
+    button.addEventListener("pointerleave", () => {
+      button.style.removeProperty("--pointer-x");
+      button.style.removeProperty("--pointer-y");
+    });
+  }
 });
 
 galleryPrev.addEventListener("click", (event) =>
@@ -608,6 +713,124 @@ gallery.addEventListener("click", (event) => {
   if (event.target === gallery) void closeGallery();
 });
 
+const galleryDrag = {
+  pointerId: null,
+  startX: 0,
+  currentX: 0,
+  lastX: 0,
+  lastTime: 0,
+  velocity: 0,
+};
+
+function finishGalleryDrag(event, { cancelled = false } = {}) {
+  if (event.pointerId !== galleryDrag.pointerId) return;
+
+  const offset = galleryDrag.currentX - galleryDrag.startX;
+  const width = Math.max(galleryStage.clientWidth, 1);
+  const shouldChange =
+    !cancelled &&
+    (Math.abs(offset) > Math.min(96, width * 0.13) || Math.abs(galleryDrag.velocity) > 0.48);
+
+  if (galleryStage.hasPointerCapture(event.pointerId)) {
+    galleryStage.releasePointerCapture(event.pointerId);
+  }
+  galleryStage.classList.remove("is-dragging");
+  galleryDrag.pointerId = null;
+
+  if (shouldChange) {
+    const direction = offset < 0 ? 1 : -1;
+    const count = projects[activeProject].images.length;
+    const nextIndex = (activeIndex + direction + count) % count;
+    showSlide(nextIndex, { direction });
+    return;
+  }
+
+  if (!galleryImage.animate || reduceMotion.matches) {
+    galleryImage.style.removeProperty("opacity");
+    galleryImage.style.removeProperty("transform");
+    return;
+  }
+
+  const returnAnimation = galleryImage.animate(
+    [
+      {
+        opacity: galleryImage.style.opacity || 1,
+        transform: galleryImage.style.transform || "translate3d(0, 0, 0) scale(1)",
+      },
+      { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
+    ],
+    {
+      duration: 320,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+    },
+  );
+  slideAnimations = [returnAnimation];
+  returnAnimation.finished
+    .catch(() => {})
+    .finally(() => {
+      if (slideAnimations[0] !== returnAnimation) return;
+      slideAnimations = [];
+      galleryImage.style.removeProperty("opacity");
+      galleryImage.style.removeProperty("transform");
+    });
+}
+
+galleryStage.addEventListener("pointerdown", (event) => {
+  if (
+    reduceMotion.matches ||
+    event.button !== 0 ||
+    !event.isPrimary ||
+    event.target.closest("button")
+  ) {
+    return;
+  }
+
+  cancelSlideAnimations();
+  galleryDrag.pointerId = event.pointerId;
+  galleryDrag.startX = event.clientX;
+  galleryDrag.currentX = event.clientX;
+  galleryDrag.lastX = event.clientX;
+  galleryDrag.lastTime = event.timeStamp;
+  galleryDrag.velocity = 0;
+  galleryStage.setPointerCapture(event.pointerId);
+  galleryStage.classList.add("is-dragging");
+});
+
+galleryStage.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== galleryDrag.pointerId) return;
+
+  const elapsed = Math.max(event.timeStamp - galleryDrag.lastTime, 1);
+  const instantVelocity = (event.clientX - galleryDrag.lastX) / elapsed;
+  galleryDrag.velocity = galleryDrag.velocity * 0.68 + instantVelocity * 0.32;
+  galleryDrag.currentX = event.clientX;
+  galleryDrag.lastX = event.clientX;
+  galleryDrag.lastTime = event.timeStamp;
+
+  const width = Math.max(galleryStage.clientWidth, 1);
+  const rawOffset = galleryDrag.currentX - galleryDrag.startX;
+  const boundary = width * 0.34;
+  const overflow = Math.max(Math.abs(rawOffset) - boundary, 0);
+  const resistedOffset =
+    Math.abs(rawOffset) <= boundary
+      ? rawOffset
+      : Math.sign(rawOffset) * (boundary + rubberband(overflow, width));
+  const travel = Math.min(Math.abs(resistedOffset) / width, 1);
+
+  galleryImage.style.transform = `translate3d(${resistedOffset}px, 0, 0) scale(${(
+    1 -
+    travel * 0.018
+  ).toFixed(4)})`;
+  galleryImage.style.opacity = String(1 - travel * 0.16);
+
+  if (Math.abs(rawOffset) > 8) event.preventDefault();
+});
+
+galleryStage.addEventListener("pointerup", (event) => finishGalleryDrag(event));
+galleryStage.addEventListener("pointercancel", (event) =>
+  finishGalleryDrag(event, { cancelled: true }),
+);
+galleryImage.addEventListener("dragstart", (event) => event.preventDefault());
+
 gallery.addEventListener("cancel", (event) => {
   event.preventDefault();
   void closeGallery({ animate: false });
@@ -617,8 +840,9 @@ gallery.addEventListener("close", () => {
   cancelModalAnimations();
   cancelSlideAnimations();
   gallery.style.removeProperty("opacity");
-  galleryShell.style.removeProperty("opacity");
-  galleryShell.style.removeProperty("transform");
+  galleryLayout.style.removeProperty("opacity");
+  galleryLayout.style.removeProperty("transform");
+  galleryLayout.style.removeProperty("transform-origin");
   body.classList.remove("is-gallery-open");
   unlockBody("gallery");
   if (galleryOpener?.isConnected) galleryOpener.focus({ preventScroll: true });
@@ -686,3 +910,296 @@ if ("IntersectionObserver" in window) {
     heroObserver.observe(hero);
   }
 }
+
+const motionMedia = [
+  ...[...document.querySelectorAll(".project-image-button")].map((element, index) => ({
+    element,
+    strength: index % 2 === 0 ? 16 : 21,
+  })),
+  { element: document.querySelector(".about-portrait"), strength: 14 },
+].filter(({ element }) => element);
+
+const scrollScenes = [];
+
+function registerScrollScene(selector, options = {}) {
+  const elements =
+    typeof selector === "string" ? [...document.querySelectorAll(selector)] : [...selector];
+
+  elements.forEach((element, index) => {
+    const scene = {
+      element,
+      travel: options.travel ?? 42,
+      horizontal:
+        typeof options.horizontal === "function"
+          ? options.horizontal(index)
+          : (options.horizontal ?? 0),
+      scaleFrom: options.scaleFrom ?? 0.985,
+      opacityFrom: options.opacityFrom ?? 0.14,
+      start: options.start ?? 0.94,
+      end: options.end ?? 0.42,
+      delay: Math.min((options.stagger ?? 0) * index, 0.42),
+      role: options.role || "content",
+    };
+
+    element.classList.add("scroll-scene", `scroll-scene-${scene.role}`);
+    scrollScenes.push(scene);
+  });
+}
+
+registerScrollScene(".projects .section-heading", {
+  travel: 54,
+  scaleFrom: 0.975,
+  opacityFrom: 0.08,
+  end: 0.46,
+  role: "heading",
+});
+registerScrollScene(".project-card", {
+  travel: 62,
+  horizontal: (index) => (index % 2 === 0 ? -16 : 16),
+  scaleFrom: 0.958,
+  opacityFrom: 0.18,
+  stagger: 0.035,
+  end: 0.36,
+  role: "project",
+});
+registerScrollScene(".services-intro", {
+  travel: 46,
+  scaleFrom: 0.98,
+  opacityFrom: 0.12,
+  role: "heading",
+});
+registerScrollScene(".service-item", {
+  travel: 24,
+  horizontal: (index) => (index % 2 === 0 ? 30 : -24),
+  scaleFrom: 0.992,
+  opacityFrom: 0.16,
+  end: 0.5,
+  role: "service",
+});
+registerScrollScene(".supervision-card", {
+  travel: 64,
+  scaleFrom: 0.955,
+  opacityFrom: 0.12,
+  end: 0.4,
+  role: "feature",
+});
+registerScrollScene(".about-portrait", {
+  travel: 64,
+  scaleFrom: 0.94,
+  opacityFrom: 0.05,
+  end: 0.36,
+  role: "portrait",
+});
+registerScrollScene(".about-copy", {
+  travel: 46,
+  horizontal: 22,
+  scaleFrom: 0.975,
+  opacityFrom: 0.1,
+  end: 0.43,
+  role: "about",
+});
+registerScrollScene(".experience, .education", {
+  travel: 46,
+  horizontal: (index) => (index === 0 ? -20 : 20),
+  scaleFrom: 0.98,
+  opacityFrom: 0.12,
+  end: 0.43,
+  role: "detail",
+});
+registerScrollScene(".process-heading", {
+  travel: 44,
+  horizontal: -16,
+  scaleFrom: 0.98,
+  opacityFrom: 0.08,
+  end: 0.44,
+  role: "heading",
+});
+registerScrollScene(".process-list li", {
+  travel: 52,
+  horizontal: (index) => (index % 2 === 0 ? -8 : 8),
+  scaleFrom: 0.95,
+  opacityFrom: 0.1,
+  stagger: 0.065,
+  end: 0.4,
+  role: "step",
+});
+registerScrollScene(".contacts-top", {
+  travel: 58,
+  scaleFrom: 0.965,
+  opacityFrom: 0.06,
+  end: 0.38,
+  role: "contact-heading",
+});
+registerScrollScene(".contact-item", {
+  travel: 34,
+  horizontal: (index) => (index === 0 ? -26 : 26),
+  scaleFrom: 0.975,
+  opacityFrom: 0.08,
+  stagger: 0.07,
+  end: 0.46,
+  role: "contact",
+});
+registerScrollScene(".footer", {
+  travel: 24,
+  scaleFrom: 0.992,
+  opacityFrom: 0.12,
+  end: 0.58,
+  role: "footer",
+});
+
+let motionFrame = 0;
+
+function smoothstep(edgeStart, edgeEnd, value) {
+  const progress = clamp((value - edgeStart) / Math.max(edgeEnd - edgeStart, 0.0001), 0, 1);
+  return progress * progress * (3 - 2 * progress);
+}
+
+function sceneProgress(scene, rect, viewportHeight) {
+  const start = viewportHeight * scene.start;
+  const end = viewportHeight * scene.end;
+  const raw = clamp((start - rect.top) / Math.max(start - end, 1), 0, 1);
+  const delayed = clamp((raw - scene.delay) / Math.max(1 - scene.delay, 0.01), 0, 1);
+  return smoothstep(0, 1, delayed);
+}
+
+function updateMotion() {
+  motionFrame = 0;
+  const headerShouldBeScrolled = window.scrollY > 18;
+
+  if (reduceMotion.matches && !forceMotion) {
+    if (siteHeader?.classList.contains("is-scrolled") !== headerShouldBeScrolled) {
+      siteHeader?.classList.toggle("is-scrolled", headerShouldBeScrolled);
+    }
+    document.documentElement.classList.remove("motion-enhanced");
+    motionMedia.forEach(({ element }) => element.style.removeProperty("--motion-y"));
+    [
+      "--hero-copy-out",
+      "--hero-expand",
+      "--hero-cinematic-opacity",
+      "--hero-cinematic-y",
+      "--hero-cue-opacity",
+      "--hero-image-y",
+    ].forEach((property) => hero?.style.removeProperty(property));
+    scrollScenes.forEach(({ element }) => {
+      [
+        "--scene-opacity",
+        "--scene-progress",
+        "--scene-scale",
+        "--scene-shadow-blur",
+        "--scene-shadow-y",
+        "--scene-x",
+        "--scene-y",
+        "--scene-detail-y",
+      ].forEach((property) => element.style.removeProperty(property));
+    });
+    hero?.classList.remove("is-mobile-cinematic");
+    document.documentElement.dataset.motionRuntime = "reduced";
+    document.documentElement.dataset.motionScrollY = String(Math.round(window.scrollY));
+    return;
+  }
+
+  document.documentElement.classList.add("motion-enhanced");
+  document.documentElement.dataset.motionRuntime = "active";
+  document.documentElement.dataset.motionScrollY = String(Math.round(window.scrollY));
+  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  const strengthScale = window.innerWidth < 768 ? 0.62 : 1;
+  const mediaUpdates = motionMedia
+    .map(({ element, strength }) => ({ element, strength, rect: element.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.bottom >= -120 && rect.top <= viewportHeight + 120)
+    .map(({ element, strength, rect }) => {
+      const center = rect.top + rect.height / 2;
+      const range = viewportHeight / 2 + rect.height / 2;
+      const progress = clamp((viewportHeight / 2 - center) / range, -1, 1);
+      return { element, shift: progress * strength * strengthScale };
+    });
+  const sceneUpdates = scrollScenes
+    .map((scene) => ({ scene, rect: scene.element.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.bottom >= -160 && rect.top <= viewportHeight + 200)
+    .map(({ scene, rect }) => {
+      const progress = sceneProgress(scene, rect, viewportHeight);
+      const inverse = 1 - progress;
+      return {
+        element: scene.element,
+        progress,
+        opacity: scene.opacityFrom + (1 - scene.opacityFrom) * progress,
+        scale: scene.scaleFrom + (1 - scene.scaleFrom) * progress,
+        shadowBlur: 54 * inverse,
+        shadowY: 24 * inverse,
+        x: scene.horizontal * inverse * strengthScale,
+        y: scene.travel * inverse * strengthScale,
+        detailY: scene.travel * inverse * 0.34 * strengthScale,
+      };
+    });
+  const heroRect = hero?.getBoundingClientRect();
+  const heroScrollRange =
+    hero && heroStage && heroRect ? Math.max(heroRect.height - heroStage.offsetHeight, 1) : 1;
+
+  if (siteHeader?.classList.contains("is-scrolled") !== headerShouldBeScrolled) {
+    siteHeader?.classList.toggle("is-scrolled", headerShouldBeScrolled);
+  }
+  mediaUpdates.forEach(({ element, shift }) => {
+    element.style.setProperty("--motion-y", `${shift.toFixed(2)}px`);
+  });
+  sceneUpdates.forEach(
+    ({ element, progress, opacity, scale, shadowBlur, shadowY, x, y, detailY }) => {
+    element.style.setProperty("--scene-progress", progress.toFixed(4));
+    element.style.setProperty("--scene-opacity", opacity.toFixed(4));
+    element.style.setProperty("--scene-scale", scale.toFixed(4));
+    element.style.setProperty("--scene-shadow-blur", `${shadowBlur.toFixed(2)}px`);
+    element.style.setProperty("--scene-shadow-y", `${shadowY.toFixed(2)}px`);
+    element.style.setProperty("--scene-x", `${x.toFixed(2)}px`);
+    element.style.setProperty("--scene-y", `${y.toFixed(2)}px`);
+    element.style.setProperty("--scene-detail-y", `${detailY.toFixed(2)}px`);
+    },
+  );
+
+  if (hero && heroRect && heroStage) {
+    const progress = clamp(-heroRect.top / heroScrollRange, 0, 1);
+    document.documentElement.dataset.heroProgress = progress.toFixed(4);
+
+    if (window.innerWidth > 960) {
+      const copyOut = smoothstep(0.04, 0.34, progress);
+      const expand = smoothstep(0.06, 0.48, progress);
+      const cinematicIn = smoothstep(0.38, 0.56, progress);
+      const cinematicOut = smoothstep(0.82, 0.98, progress);
+      const cinematicOpacity = cinematicIn * (1 - cinematicOut);
+      const cinematicY = 28 - cinematicIn * 28 - cinematicOut * 34;
+      const cueOpacity = 1 - smoothstep(0.02, 0.18, progress);
+
+      hero.style.setProperty("--hero-copy-out", copyOut.toFixed(4));
+      hero.style.setProperty("--hero-expand", expand.toFixed(4));
+      hero.style.setProperty("--hero-cinematic-opacity", cinematicOpacity.toFixed(4));
+      hero.style.setProperty("--hero-cinematic-y", `${cinematicY.toFixed(2)}px`);
+      hero.style.setProperty("--hero-cue-opacity", cueOpacity.toFixed(4));
+      hero.style.setProperty("--hero-image-y", `${(-12 * progress).toFixed(2)}px`);
+      hero.classList.remove("is-mobile-cinematic");
+    } else {
+      const copyOut = smoothstep(0.08, 0.42, progress);
+      const expand = smoothstep(0.02, 0.82, progress);
+      const cinematicIn = smoothstep(0.4, 0.6, progress);
+      const cinematicOut = smoothstep(0.84, 0.98, progress);
+      const cinematicOpacity = cinematicIn * (1 - cinematicOut);
+      const cinematicY = 24 - cinematicIn * 24 - cinematicOut * 22;
+      const cueOpacity = 1 - smoothstep(0.02, 0.2, progress);
+
+      hero.style.setProperty("--hero-copy-out", copyOut.toFixed(4));
+      hero.style.setProperty("--hero-expand", expand.toFixed(4));
+      hero.style.setProperty("--hero-cinematic-opacity", cinematicOpacity.toFixed(4));
+      hero.style.setProperty("--hero-cinematic-y", `${cinematicY.toFixed(2)}px`);
+      hero.style.setProperty("--hero-cue-opacity", cueOpacity.toFixed(4));
+      hero.style.setProperty("--hero-image-y", `${(-26 * progress).toFixed(2)}px`);
+      hero.classList.toggle("is-mobile-cinematic", progress > 0.46);
+    }
+  }
+}
+
+function requestMotionUpdate() {
+  if (motionFrame) return;
+  motionFrame = window.requestAnimationFrame(updateMotion);
+}
+
+window.addEventListener("scroll", requestMotionUpdate, { passive: true });
+window.addEventListener("resize", requestMotionUpdate);
+window.visualViewport?.addEventListener("resize", requestMotionUpdate);
+reduceMotion.addEventListener?.("change", requestMotionUpdate);
+updateMotion();
