@@ -386,16 +386,6 @@ img {
   text-transform: uppercase;
 }
 
-.hero-index {
-  position: absolute;
-  z-index: 2;
-  top: 26px;
-  right: 28px;
-  color: rgba(255, 255, 255, 0.88);
-  font-family: var(--serif);
-  font-size: 17px;
-}
-
 .section {
   padding: clamp(92px, 12vw, 184px) clamp(22px, 5.4vw, 98px);
 }
@@ -1714,10 +1704,6 @@ img {
 
   .hero-visual img {
     object-position: center 44%;
-  }
-
-  .hero-index {
-    display: none;
   }
 
   .section-heading,
