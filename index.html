@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru" data-motion-build="21">
+<html lang="ru" data-motion-build="22">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -25,7 +25,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/images/portfolio/morena-01.webp" />
     <link rel="preload" as="image" href="/images/portfolio/morena-01.webp" fetchpriority="high" />
-    <link rel="stylesheet" href="/styles.css?motion-build=21" />
+    <link rel="stylesheet" href="/styles.css?motion-build=22" />
     <link rel="icon" href="/favicon.svg" />
     <script type="application/ld+json">
       {
@@ -754,11 +754,15 @@
 
         <div class="gallery-layout">
           <div class="gallery-stage">
-            <img
-              id="gallery-image"
-              src="/images/portfolio/morena-06.webp"
-              alt="Входная зона ЖК «Морена» с лестницей и логотипом"
-            />
+            <div class="gallery-track" id="gallery-track">
+              <figure class="gallery-frame">
+                <img
+                  id="gallery-image"
+                  src="/images/portfolio/morena-06.webp"
+                  alt="Входная зона ЖК «Морена» с лестницей и логотипом"
+                />
+              </figure>
+            </div>
             <button class="gallery-arrow gallery-prev" type="button" aria-label="Предыдущее изображение">←</button>
             <button class="gallery-arrow gallery-next" type="button" aria-label="Следующее изображение">→</button>
             <p class="gallery-counter" aria-live="polite"><span id="gallery-current">1</span> / <span id="gallery-total">1</span></p>
@@ -782,6 +786,6 @@
       </div>
     </dialog>
 
-    <script src="/script.js?motion-build=21" defer></script>
+    <script src="/script.js?motion-build=22" defer></script>
   </body>
 </html>

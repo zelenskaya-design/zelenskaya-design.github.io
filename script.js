@@ -187,7 +187,7 @@ const floatingContact = document.querySelector(".floating-contact");
 const gallery = document.querySelector("#project-gallery");
 const galleryLayout = document.querySelector(".gallery-layout");
 const galleryStage = document.querySelector(".gallery-stage");
-const galleryImage = document.querySelector("#gallery-image");
+const galleryTrack = document.querySelector("#gallery-track");
 const galleryTitle = document.querySelector("#gallery-title");
 const galleryMeta = document.querySelector("#gallery-meta");
 const galleryDescription = document.querySelector("#gallery-description");
@@ -229,10 +229,9 @@ let copyLabelAnimation = null;
 let copyLabelToken = 0;
 let modalAnimations = [];
 let modalAnimationToken = 0;
-let slideAnimations = [];
-let slideOverlay = null;
+let slideAnimation = null;
 let slideTransitionToken = 0;
-let queuedSlide = null;
+let slideWrapOffset = 0;
 const galleryImageCache = new Map();
 let galleryOriginTransform = "translate3d(0, 8px, 0) scale(0.985)";
 let lockedScrollBehavior = "";
@@ -438,10 +437,7 @@ function renderGallery({ updateImage = true } = {}) {
 
   galleryNumber.textContent = project.number;
   galleryKicker.textContent = project.kicker;
-  if (updateImage) {
-    galleryImage.src = image.src;
-    galleryImage.alt = image.alt;
-  }
+  if (updateImage) syncGalleryFrames();
   galleryTitle.textContent = image.title;
   renderMeta(image.meta);
   galleryDescription.textContent = image.description;
@@ -456,29 +452,96 @@ function renderGallery({ updateImage = true } = {}) {
   });
 }
 
-function cancelSlideAnimations({ clearQueue = true } = {}) {
-  slideTransitionToken += 1;
-  slideAnimations.forEach((animation) => animation.cancel());
-  slideAnimations = [];
-  slideOverlay?.remove();
-  slideOverlay = null;
-  if (clearQueue) queuedSlide = null;
-  galleryImage.style.removeProperty("opacity");
-  galleryImage.style.removeProperty("filter");
-  galleryImage.style.removeProperty("transform");
+function setTrackPosition(position) {
+  galleryTrack.style.transform = `translate3d(${position}px, 0, 0)`;
 }
 
-function settleSlideForDirectManipulation() {
-  if (!slideOverlay || !activeProject) {
-    cancelSlideAnimations();
+function readTrackPosition() {
+  const transform = getComputedStyle(galleryTrack).transform;
+  if (!transform || transform === "none") return 0;
+  try {
+    return new DOMMatrixReadOnly(transform).m41;
+  } catch {
+    return 0;
+  }
+}
+
+function activeTrackPosition(index = activeIndex) {
+  return -(index + 1) * Math.max(galleryStage.clientWidth, 1);
+}
+
+function syncGalleryFrames() {
+  const project = projects[activeProject];
+  [...galleryTrack.children].forEach((frame) => {
+    const logicalIndex = Number(frame.dataset.index);
+    const image = frame.querySelector("img");
+    const isActive = !frame.dataset.clone && logicalIndex === activeIndex;
+    frame.setAttribute("aria-hidden", String(!isActive));
+    if (isActive) {
+      const current = normalizedImage(project, logicalIndex);
+      image.alt = current.alt;
+    } else {
+      image.alt = "";
+    }
+  });
+}
+
+function buildGalleryTrack(project) {
+  const count = project.images.length;
+  const sequence = [
+    { index: count - 1, clone: "last" },
+    ...project.images.map((_, index) => ({ index, clone: "" })),
+    { index: 0, clone: "first" },
+  ];
+
+  const frames = sequence.map(({ index, clone }) => {
+    const imageData = normalizedImage(project, index);
+    const frame = document.createElement("figure");
+    const image = document.createElement("img");
+
+    frame.className = "gallery-frame";
+    frame.dataset.index = String(index);
+    if (clone) frame.dataset.clone = clone;
+    image.src = imageData.src;
+    image.alt = "";
+    image.decoding = "async";
+    image.draggable = false;
+    frame.append(image);
+    return frame;
+  });
+
+  galleryTrack.replaceChildren(...frames);
+  galleryTrack.style.transform = `translate3d(-${activeIndex + 1}00%, 0, 0)`;
+  syncGalleryFrames();
+}
+
+function normalizeInterruptedWrap(position) {
+  if (!slideWrapOffset) return position;
+  const normalized = position + slideWrapOffset;
+  slideWrapOffset = 0;
+  return normalized;
+}
+
+function cancelSlideAnimations({ preservePosition = false } = {}) {
+  slideTransitionToken += 1;
+  if (!slideAnimation) {
+    slideWrapOffset = 0;
     return;
   }
 
-  const image = normalizedImage(projects[activeProject], activeIndex);
-  slideAnimations.forEach((animation) => animation.cancel());
-  galleryImage.src = image.src;
-  galleryImage.alt = image.alt;
+  let position = preservePosition ? readTrackPosition() : activeTrackPosition();
+  slideAnimation.cancel();
+  slideAnimation = null;
+  if (preservePosition) position = normalizeInterruptedWrap(position);
+  setTrackPosition(position);
+}
+
+function settleSlideForDirectManipulation() {
   cancelSlideAnimations();
+  if (activeProject) {
+    setTrackPosition(activeTrackPosition());
+    syncGalleryFrames();
+  }
 }
 
 function prepareGalleryImage(src) {
@@ -508,141 +571,110 @@ function prepareGalleryImage(src) {
 
 function preloadProjectImages(project, active = 0) {
   const count = project.images.length;
-  const prioritized = [
+  const immediate = [
     active,
     (active + 1) % count,
     (active - 1 + count) % count,
-    ...project.images.map((_, index) => index),
   ];
-  const unique = [...new Set(prioritized)];
+  const remaining = project.images
+    .map((_, index) => index)
+    .filter((index) => !immediate.includes(index));
 
-  const preload = () => {
-    unique.forEach((index) => {
+  [...new Set(immediate)].forEach((index) => {
+    const image = normalizedImage(project, index);
+    void prepareGalleryImage(image.src).catch(() => {});
+  });
+
+  const preloadRemaining = () => {
+    remaining.forEach((index) => {
       const image = normalizedImage(project, index);
       void prepareGalleryImage(image.src).catch(() => {});
     });
   };
 
   if ("requestIdleCallback" in window) {
-    window.requestIdleCallback(preload, { timeout: 700 });
+    window.requestIdleCallback(preloadRemaining, { timeout: 700 });
   } else {
-    window.setTimeout(preload, 0);
+    window.setTimeout(preloadRemaining, 0);
   }
 }
 
-function galleryRevealFrames(direction) {
-  const fromEdge = direction > 0 ? "inset(0 0 0 100%)" : "inset(0 100% 0 0)";
-  const distance = Math.min(Math.max(galleryStage.clientWidth * 0.026, 16), 34);
+function animateTrackToPosition(
+  target,
+  { velocity = 0, duration = null, wrapOffset = 0 } = {},
+) {
+  cancelSlideAnimations({ preservePosition: true });
+  const start = readTrackPosition();
+  if (Math.abs(start - target) < 0.5 || !galleryTrack.animate || reduceMotion.matches) {
+    setTrackPosition(target);
+    return Promise.resolve();
+  }
 
-  return [
+  const width = Math.max(galleryStage.clientWidth, 1);
+  const distanceRatio = Math.min(Math.abs(target - start) / width, 1.6);
+  const response =
+    duration ??
+    clamp(250 + (distanceRatio - 1) * 70 - Math.min(Math.abs(velocity), 1.8) * 32, 170, 300);
+  const token = slideTransitionToken;
+  slideWrapOffset = wrapOffset;
+  const animation = galleryTrack.animate(
+    [
+      { transform: `translate3d(${start}px, 0, 0)` },
+      { transform: `translate3d(${target}px, 0, 0)` },
+    ],
     {
-      clipPath: fromEdge,
-      filter: "blur(1.2px)",
-      transform: `translate3d(${direction * distance}px, 0, 0) scale(1.035)`,
+      duration: response,
+      easing: "cubic-bezier(0.32, 0.72, 0, 1)",
+      fill: "forwards",
     },
-    {
-      clipPath: "inset(0 0 0 0)",
-      filter: "blur(0)",
-      transform: "translate3d(0, 0, 0) scale(1)",
-    },
-  ];
+  );
+  slideAnimation = animation;
+
+  return animation.finished
+    .catch(() => {})
+    .then(() => {
+      if (token !== slideTransitionToken || slideAnimation !== animation) return;
+      setTrackPosition(target);
+      animation.cancel();
+      slideAnimation = null;
+    });
 }
 
-function showSlide(
-  index,
-  { direction = 1, animate = true } = {},
-) {
-  if (slideOverlay) {
-    if (index === activeIndex) {
-      queuedSlide = null;
-      return;
-    }
-    queuedSlide = { index, direction, animate };
+function showSlide(index, { direction = 1, animate = true, velocity = 0 } = {}) {
+  if (index === activeIndex) return;
+  const previousIndex = activeIndex;
+  const project = projects[activeProject];
+  const count = project.images.length;
+  const image = normalizedImage(projects[activeProject], index);
+  activeIndex = index;
+  renderGallery({ updateImage: false });
+  syncGalleryFrames();
+
+  let targetTrackIndex = index + 1;
+  if (direction > 0 && previousIndex === count - 1 && index === 0) {
+    targetTrackIndex = count + 1;
+  } else if (direction < 0 && previousIndex === 0 && index === count - 1) {
+    targetTrackIndex = 0;
+  }
+
+  const width = Math.max(galleryStage.clientWidth, 1);
+  const target = -targetTrackIndex * width;
+  if (!animate || reduceMotion.matches) {
+    cancelSlideAnimations();
+    setTrackPosition(activeTrackPosition());
     return;
   }
 
-  if (index === activeIndex) return;
-  cancelSlideAnimations({ clearQueue: false });
-  const token = slideTransitionToken;
-  const previousIndex = activeIndex;
-  const image = normalizedImage(projects[activeProject], index);
-
-  const incoming = galleryImage.cloneNode();
-  incoming.removeAttribute("id");
-  incoming.className = "gallery-slide-incoming";
-  incoming.src = image.src;
-  incoming.alt = "";
-  incoming.setAttribute("aria-hidden", "true");
-  incoming.style.visibility = "hidden";
-  galleryStage.insertBefore(incoming, galleryPrev);
-  slideOverlay = incoming;
-
-  activeIndex = index;
-  renderGallery({ updateImage: false });
-
-  void prepareGalleryImage(image.src)
-    .then(async () => {
-      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
-
-      incoming.src = image.src;
-      incoming.style.visibility = "visible";
-      if (!animate || !incoming.animate || reduceMotion.matches) {
-        galleryImage.src = image.src;
-        galleryImage.alt = image.alt;
-        await galleryImage.decode?.().catch(() => {});
-        cancelSlideAnimations({ clearQueue: false });
-        const next = queuedSlide;
-        queuedSlide = null;
-        if (next && next.index !== activeIndex) showSlide(next.index, next);
-        return;
-      }
-
-      const incomingAnimation = incoming.animate(
-        galleryRevealFrames(direction),
-        {
-          duration: 560,
-          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-          fill: "both",
-        },
-      );
-      const outgoingAnimation = galleryImage.animate(
-        [
-          {
-            filter: "brightness(1) saturate(1)",
-            transform: "translate3d(0, 0, 0) scale(1)",
-          },
-          {
-            filter: "brightness(0.78) saturate(0.92)",
-            transform: `translate3d(${-direction * 12}px, 0, 0) scale(0.992)`,
-          },
-        ],
-        {
-          duration: 560,
-          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-          fill: "both",
-        },
-      );
-      slideAnimations = [incomingAnimation, outgoingAnimation];
-      await Promise.allSettled([incomingAnimation.finished, outgoingAnimation.finished]);
-      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
-
-      galleryImage.src = image.src;
-      galleryImage.alt = image.alt;
-      await galleryImage.decode?.().catch(() => {});
-      cancelSlideAnimations({ clearQueue: false });
-
-      const next = queuedSlide;
-      queuedSlide = null;
-      if (next && next.index !== activeIndex) {
-        showSlide(next.index, next);
-      }
-    })
-    .catch(() => {
-      if (token !== slideTransitionToken || slideOverlay !== incoming) return;
-      activeIndex = previousIndex;
-      renderGallery({ updateImage: false });
-      cancelSlideAnimations();
-    });
+  void prepareGalleryImage(image.src).catch(() => {});
+  const wrapOffset =
+    targetTrackIndex === count + 1 ? count * width : targetTrackIndex === 0 ? -count * width : 0;
+  void animateTrackToPosition(target, { velocity, wrapOffset }).then(() => {
+    if (!slideAnimation) {
+      slideWrapOffset = 0;
+      setTrackPosition(activeTrackPosition());
+      syncGalleryFrames();
+    }
+  });
 }
 
 function buildThumbnails(project) {
@@ -702,9 +734,11 @@ function openGallery(projectKey, { opener = null, animate = true } = {}) {
   galleryOpener = opener;
   activeProject = projectKey;
   activeIndex = 0;
+  buildGalleryTrack(projects[projectKey]);
   buildThumbnails(projects[projectKey]);
   renderGallery();
   gallery.showModal();
+  setTrackPosition(activeTrackPosition());
   body.classList.add("is-gallery-open");
   lockBody("gallery");
   setGalleryOrigin(opener);
@@ -774,8 +808,7 @@ async function closeGallery({ animate = true } = {}) {
 
 function changeSlide(delta, { animate = true } = {}) {
   const count = projects[activeProject].images.length;
-  const currentTarget = queuedSlide?.index ?? activeIndex;
-  const nextIndex = (currentTarget + delta + count) % count;
+  const nextIndex = (activeIndex + delta + count) % count;
   showSlide(nextIndex, { direction: Math.sign(delta), animate });
 }
 
@@ -822,6 +855,8 @@ const galleryDrag = {
   lastX: 0,
   lastTime: 0,
   velocity: 0,
+  basePosition: 0,
+  startIndex: 0,
 };
 
 function finishGalleryDrag(event, { cancelled = false } = {}) {
@@ -829,9 +864,11 @@ function finishGalleryDrag(event, { cancelled = false } = {}) {
 
   const offset = galleryDrag.currentX - galleryDrag.startX;
   const width = Math.max(galleryStage.clientWidth, 1);
+  const projectedOffset = offset + galleryDrag.velocity * 145;
   const shouldChange =
     !cancelled &&
-    (Math.abs(offset) > Math.min(96, width * 0.13) || Math.abs(galleryDrag.velocity) > 0.48);
+    (Math.abs(projectedOffset) > Math.min(72, width * 0.11) ||
+      Math.abs(galleryDrag.velocity) > 0.34);
 
   if (galleryStage.hasPointerCapture(event.pointerId)) {
     galleryStage.releasePointerCapture(event.pointerId);
@@ -840,41 +877,17 @@ function finishGalleryDrag(event, { cancelled = false } = {}) {
   galleryDrag.pointerId = null;
 
   if (shouldChange) {
-    const direction = offset < 0 ? 1 : -1;
+    const direction = projectedOffset < 0 ? 1 : -1;
     const count = projects[activeProject].images.length;
-    const nextIndex = (activeIndex + direction + count) % count;
-    showSlide(nextIndex, { direction });
+    const nextIndex = (galleryDrag.startIndex + direction + count) % count;
+    showSlide(nextIndex, { direction, velocity: galleryDrag.velocity });
     return;
   }
 
-  if (!galleryImage.animate || reduceMotion.matches) {
-    galleryImage.style.removeProperty("opacity");
-    galleryImage.style.removeProperty("transform");
-    return;
-  }
-
-  const returnAnimation = galleryImage.animate(
-    [
-      {
-        opacity: galleryImage.style.opacity || 1,
-        transform: galleryImage.style.transform || "translate3d(0, 0, 0) scale(1)",
-      },
-      { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
-    ],
-    {
-      duration: 320,
-      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-    },
-  );
-  slideAnimations = [returnAnimation];
-  returnAnimation.finished
-    .catch(() => {})
-    .finally(() => {
-      if (slideAnimations[0] !== returnAnimation) return;
-      slideAnimations = [];
-      galleryImage.style.removeProperty("opacity");
-      galleryImage.style.removeProperty("transform");
-    });
+  void animateTrackToPosition(activeTrackPosition(), {
+    velocity: galleryDrag.velocity,
+    duration: 210,
+  });
 }
 
 galleryStage.addEventListener("pointerdown", (event) => {
@@ -887,13 +900,15 @@ galleryStage.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  settleSlideForDirectManipulation();
+  cancelSlideAnimations({ preservePosition: true });
   galleryDrag.pointerId = event.pointerId;
   galleryDrag.startX = event.clientX;
   galleryDrag.currentX = event.clientX;
   galleryDrag.lastX = event.clientX;
   galleryDrag.lastTime = event.timeStamp;
   galleryDrag.velocity = 0;
+  galleryDrag.basePosition = readTrackPosition();
+  galleryDrag.startIndex = activeIndex;
   galleryStage.setPointerCapture(event.pointerId);
   galleryStage.classList.add("is-dragging");
 });
@@ -910,28 +925,28 @@ galleryStage.addEventListener("pointermove", (event) => {
 
   const width = Math.max(galleryStage.clientWidth, 1);
   const rawOffset = galleryDrag.currentX - galleryDrag.startX;
-  const boundary = width * 0.34;
+  const boundary = width;
   const overflow = Math.max(Math.abs(rawOffset) - boundary, 0);
   const resistedOffset =
     Math.abs(rawOffset) <= boundary
       ? rawOffset
       : Math.sign(rawOffset) * (boundary + rubberband(overflow, width));
-  const travel = Math.min(Math.abs(resistedOffset) / width, 1);
+  setTrackPosition(galleryDrag.basePosition + resistedOffset);
 
-  galleryImage.style.transform = `translate3d(${resistedOffset}px, 0, 0) scale(${(
-    1 -
-    travel * 0.018
-  ).toFixed(4)})`;
-  galleryImage.style.opacity = String(1 - travel * 0.16);
-
-  if (Math.abs(rawOffset) > 8) event.preventDefault();
+  if (Math.abs(rawOffset) > 6) event.preventDefault();
 });
 
 galleryStage.addEventListener("pointerup", (event) => finishGalleryDrag(event));
 galleryStage.addEventListener("pointercancel", (event) =>
   finishGalleryDrag(event, { cancelled: true }),
 );
-galleryImage.addEventListener("dragstart", (event) => event.preventDefault());
+galleryTrack.addEventListener("dragstart", (event) => event.preventDefault());
+
+window.addEventListener("resize", () => {
+  if (!gallery.open || galleryDrag.pointerId !== null) return;
+  cancelSlideAnimations();
+  setTrackPosition(activeTrackPosition());
+});
 
 gallery.addEventListener("cancel", (event) => {
   event.preventDefault();
