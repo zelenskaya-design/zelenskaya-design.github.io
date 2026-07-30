@@ -231,7 +231,6 @@ let modalAnimations = [];
 let modalAnimationToken = 0;
 let slideAnimation = null;
 let slideTransitionToken = 0;
-let slideWrapOffset = 0;
 const galleryImageCache = new Map();
 let galleryOriginTransform = "translate3d(0, 8px, 0) scale(0.985)";
 let lockedScrollBehavior = "";
@@ -437,7 +436,7 @@ function renderGallery({ updateImage = true } = {}) {
 
   galleryNumber.textContent = project.number;
   galleryKicker.textContent = project.kicker;
-  if (updateImage) syncGalleryFrames();
+  if (updateImage) mountActiveGalleryFrame();
   galleryTitle.textContent = image.title;
   renderMeta(image.meta);
   galleryDescription.textContent = image.description;
@@ -452,96 +451,61 @@ function renderGallery({ updateImage = true } = {}) {
   });
 }
 
-function setTrackPosition(position) {
-  galleryTrack.style.transform = `translate3d(${position}px, 0, 0)`;
+function galleryStageWidth() {
+  return Math.max(galleryStage.getBoundingClientRect().width, 1);
 }
 
-function readTrackPosition() {
-  const transform = getComputedStyle(galleryTrack).transform;
-  if (!transform || transform === "none") return 0;
-  try {
-    return new DOMMatrixReadOnly(transform).m41;
-  } catch {
-    return 0;
-  }
-}
-
-function activeTrackPosition(index = activeIndex) {
-  return -(index + 1) * Math.max(galleryStage.clientWidth, 1);
-}
-
-function syncGalleryFrames() {
+function createGalleryFrame(index, className = "") {
   const project = projects[activeProject];
-  [...galleryTrack.children].forEach((frame) => {
-    const logicalIndex = Number(frame.dataset.index);
-    const image = frame.querySelector("img");
-    const isActive = !frame.dataset.clone && logicalIndex === activeIndex;
-    frame.setAttribute("aria-hidden", String(!isActive));
-    if (isActive) {
-      const current = normalizedImage(project, logicalIndex);
-      image.alt = current.alt;
-    } else {
-      image.alt = "";
-    }
-  });
+  const imageData = normalizedImage(project, index);
+  const frame = document.createElement("figure");
+  const image = document.createElement("img");
+
+  frame.className = `gallery-frame ${className}`.trim();
+  frame.dataset.index = String(index);
+  frame.setAttribute("aria-hidden", className === "is-incoming" ? "true" : "false");
+  image.src = imageData.src;
+  image.alt = className === "is-incoming" ? "" : imageData.alt;
+  image.decoding = "async";
+  image.draggable = false;
+  frame.append(image);
+  return frame;
 }
 
-function buildGalleryTrack(project) {
-  const count = project.images.length;
-  const sequence = [
-    { index: count - 1, clone: "last" },
-    ...project.images.map((_, index) => ({ index, clone: "" })),
-    { index: 0, clone: "first" },
-  ];
-
-  const frames = sequence.map(({ index, clone }) => {
-    const imageData = normalizedImage(project, index);
-    const frame = document.createElement("figure");
-    const image = document.createElement("img");
-
-    frame.className = "gallery-frame";
-    frame.dataset.index = String(index);
-    if (clone) frame.dataset.clone = clone;
-    image.src = imageData.src;
-    image.alt = "";
-    image.decoding = "async";
-    image.draggable = false;
-    frame.append(image);
-    return frame;
-  });
-
-  galleryTrack.replaceChildren(...frames);
-  galleryTrack.style.transform = `translate3d(-${activeIndex + 1}00%, 0, 0)`;
-  syncGalleryFrames();
+function mountActiveGalleryFrame(frame = null) {
+  if (!activeProject) return null;
+  const currentFrame = frame || createGalleryFrame(activeIndex, "is-current");
+  const image = currentFrame.querySelector("img");
+  const imageData = normalizedImage(projects[activeProject], activeIndex);
+  currentFrame.className = "gallery-frame is-current";
+  currentFrame.dataset.index = String(activeIndex);
+  currentFrame.setAttribute("aria-hidden", "false");
+  currentFrame.style.transform = "translate3d(0, 0, 0)";
+  currentFrame.style.removeProperty("visibility");
+  image.alt = imageData.alt;
+  galleryTrack.replaceChildren(currentFrame);
+  return currentFrame;
 }
 
-function normalizeInterruptedWrap(position) {
-  if (!slideWrapOffset) return position;
-  const normalized = position + slideWrapOffset;
-  slideWrapOffset = 0;
-  return normalized;
+function buildGalleryTrack() {
+  mountActiveGalleryFrame();
 }
 
-function cancelSlideAnimations({ preservePosition = false } = {}) {
+function cancelSlideAnimations({ commitTarget = true } = {}) {
   slideTransitionToken += 1;
-  if (!slideAnimation) {
-    slideWrapOffset = 0;
-    return;
-  }
-
-  let position = preservePosition ? readTrackPosition() : activeTrackPosition();
-  slideAnimation.cancel();
+  if (!slideAnimation) return;
+  window.cancelAnimationFrame(slideAnimation.frameId);
+  const targetIndex = slideAnimation.targetIndex;
+  slideAnimation.resolve?.(false);
   slideAnimation = null;
-  if (preservePosition) position = normalizeInterruptedWrap(position);
-  setTrackPosition(position);
+  if (commitTarget && Number.isInteger(targetIndex)) activeIndex = targetIndex;
+  renderGallery({ updateImage: false });
+  mountActiveGalleryFrame();
 }
 
 function settleSlideForDirectManipulation() {
   cancelSlideAnimations();
-  if (activeProject) {
-    setTrackPosition(activeTrackPosition());
-    syncGalleryFrames();
-  }
+  if (activeProject) mountActiveGalleryFrame();
 }
 
 function prepareGalleryImage(src) {
@@ -599,81 +563,128 @@ function preloadProjectImages(project, active = 0) {
   }
 }
 
-function animateTrackToPosition(
-  target,
-  { velocity = 0, duration = null, wrapOffset = 0 } = {},
-) {
-  cancelSlideAnimations({ preservePosition: true });
-  const start = readTrackPosition();
-  if (Math.abs(start - target) < 0.5 || !galleryTrack.animate || reduceMotion.matches) {
-    setTrackPosition(target);
-    return Promise.resolve();
+function setFrameOffset(frame, offset) {
+  frame.style.transform = `translate3d(${offset}px, 0, 0)`;
+}
+
+function easeOutQuart(progress) {
+  return 1 - (1 - progress) ** 4;
+}
+
+function animateGalleryFrames({
+  currentFrame,
+  incomingFrame = null,
+  startCurrent,
+  endCurrent,
+  startIncoming = 0,
+  endIncoming = 0,
+  targetIndex = null,
+  velocity = 0,
+  duration = null,
+  onComplete,
+}) {
+  cancelSlideAnimations({ commitTarget: true });
+
+  if (reduceMotion.matches) {
+    setFrameOffset(currentFrame, endCurrent);
+    if (incomingFrame) setFrameOffset(incomingFrame, endIncoming);
+    onComplete();
+    return Promise.resolve(true);
   }
 
-  const width = Math.max(galleryStage.clientWidth, 1);
-  const distanceRatio = Math.min(Math.abs(target - start) / width, 1.6);
+  const width = galleryStageWidth();
+  const remaining = Math.min(Math.abs(endCurrent - startCurrent) / width, 1);
   const response =
     duration ??
-    clamp(250 + (distanceRatio - 1) * 70 - Math.min(Math.abs(velocity), 1.8) * 32, 170, 300);
+    clamp(205 + remaining * 42 - Math.min(Math.abs(velocity), 1.8) * 34, 155, 245);
+  const startedAt = performance.now();
   const token = slideTransitionToken;
-  slideWrapOffset = wrapOffset;
-  const animation = galleryTrack.animate(
-    [
-      { transform: `translate3d(${start}px, 0, 0)` },
-      { transform: `translate3d(${target}px, 0, 0)` },
-    ],
-    {
-      duration: response,
-      easing: "cubic-bezier(0.32, 0.72, 0, 1)",
-      fill: "forwards",
-    },
-  );
-  slideAnimation = animation;
 
-  return animation.finished
-    .catch(() => {})
-    .then(() => {
-      if (token !== slideTransitionToken || slideAnimation !== animation) return;
-      setTrackPosition(target);
-      animation.cancel();
+  return new Promise((resolve) => {
+    const step = (now) => {
+      if (token !== slideTransitionToken) {
+        resolve(false);
+        return;
+      }
+
+      const progress = Math.min((now - startedAt) / response, 1);
+      const eased = easeOutQuart(progress);
+      setFrameOffset(currentFrame, startCurrent + (endCurrent - startCurrent) * eased);
+      if (incomingFrame) {
+        setFrameOffset(
+          incomingFrame,
+          startIncoming + (endIncoming - startIncoming) * eased,
+        );
+      }
+
+      if (progress < 1) {
+        slideAnimation.frameId = window.requestAnimationFrame(step);
+        return;
+      }
+
       slideAnimation = null;
-    });
+      onComplete();
+      resolve(true);
+    };
+
+    slideAnimation = {
+      frameId: window.requestAnimationFrame(step),
+      resolve,
+      targetIndex,
+    };
+  });
+}
+
+function prepareGalleryTransition(targetIndex, direction, offset = 0) {
+  const width = galleryStageWidth();
+  const currentFrame =
+    galleryTrack.querySelector(".gallery-frame.is-current") ||
+    mountActiveGalleryFrame();
+  const incomingFrame = createGalleryFrame(targetIndex, "is-incoming");
+  setFrameOffset(currentFrame, offset);
+  setFrameOffset(incomingFrame, offset + direction * width);
+  galleryTrack.replaceChildren(currentFrame, incomingFrame);
+  return { currentFrame, incomingFrame };
+}
+
+function commitGalleryTransition(targetIndex, currentFrame, incomingFrame) {
+  currentFrame.style.visibility = "hidden";
+  activeIndex = targetIndex;
+  renderGallery({ updateImage: false });
+  mountActiveGalleryFrame(incomingFrame);
 }
 
 function showSlide(index, { direction = 1, animate = true, velocity = 0 } = {}) {
+  cancelSlideAnimations({ commitTarget: true });
   if (index === activeIndex) return;
-  const previousIndex = activeIndex;
-  const project = projects[activeProject];
-  const count = project.images.length;
   const image = normalizedImage(projects[activeProject], index);
-  activeIndex = index;
-  renderGallery({ updateImage: false });
-  syncGalleryFrames();
-
-  let targetTrackIndex = index + 1;
-  if (direction > 0 && previousIndex === count - 1 && index === 0) {
-    targetTrackIndex = count + 1;
-  } else if (direction < 0 && previousIndex === 0 && index === count - 1) {
-    targetTrackIndex = 0;
-  }
-
-  const width = Math.max(galleryStage.clientWidth, 1);
-  const target = -targetTrackIndex * width;
   if (!animate || reduceMotion.matches) {
-    cancelSlideAnimations();
-    setTrackPosition(activeTrackPosition());
+    activeIndex = index;
+    renderGallery({ updateImage: false });
+    mountActiveGalleryFrame();
     return;
   }
 
   void prepareGalleryImage(image.src).catch(() => {});
-  const wrapOffset =
-    targetTrackIndex === count + 1 ? count * width : targetTrackIndex === 0 ? -count * width : 0;
-  void animateTrackToPosition(target, { velocity, wrapOffset }).then(() => {
-    if (!slideAnimation) {
-      slideWrapOffset = 0;
-      setTrackPosition(activeTrackPosition());
-      syncGalleryFrames();
-    }
+  const normalizedDirection = direction >= 0 ? 1 : -1;
+  const width = galleryStageWidth();
+  const { currentFrame, incomingFrame } = prepareGalleryTransition(
+    index,
+    normalizedDirection,
+  );
+  activeIndex = index;
+  renderGallery({ updateImage: false });
+  void animateGalleryFrames({
+    currentFrame,
+    incomingFrame,
+    startCurrent: 0,
+    endCurrent: -normalizedDirection * width,
+    startIncoming: normalizedDirection * width,
+    endIncoming: 0,
+    targetIndex: index,
+    velocity,
+    onComplete: () =>
+      commitGalleryTransition(index, currentFrame, incomingFrame),
   });
 }
 
@@ -734,13 +745,13 @@ function openGallery(projectKey, { opener = null, animate = true } = {}) {
   galleryOpener = opener;
   activeProject = projectKey;
   activeIndex = 0;
-  buildGalleryTrack(projects[projectKey]);
+  buildGalleryTrack();
   buildThumbnails(projects[projectKey]);
   renderGallery();
   gallery.showModal();
-  setTrackPosition(activeTrackPosition());
   body.classList.add("is-gallery-open");
   lockBody("gallery");
+  mountActiveGalleryFrame();
   setGalleryOrigin(opener);
   galleryClose.focus({ preventScroll: true });
 
@@ -855,15 +866,17 @@ const galleryDrag = {
   lastX: 0,
   lastTime: 0,
   velocity: 0,
-  basePosition: 0,
   startIndex: 0,
+  direction: 0,
+  currentFrame: null,
+  incomingFrame: null,
 };
 
 function finishGalleryDrag(event, { cancelled = false } = {}) {
   if (event.pointerId !== galleryDrag.pointerId) return;
 
   const offset = galleryDrag.currentX - galleryDrag.startX;
-  const width = Math.max(galleryStage.clientWidth, 1);
+  const width = galleryStageWidth();
   const projectedOffset = offset + galleryDrag.velocity * 145;
   const shouldChange =
     !cancelled &&
@@ -880,13 +893,44 @@ function finishGalleryDrag(event, { cancelled = false } = {}) {
     const direction = projectedOffset < 0 ? 1 : -1;
     const count = projects[activeProject].images.length;
     const nextIndex = (galleryDrag.startIndex + direction + count) % count;
-    showSlide(nextIndex, { direction, velocity: galleryDrag.velocity });
+    const frames =
+      galleryDrag.direction === direction && galleryDrag.incomingFrame
+        ? {
+            currentFrame: galleryDrag.currentFrame,
+            incomingFrame: galleryDrag.incomingFrame,
+          }
+        : prepareGalleryTransition(nextIndex, direction, offset);
+    activeIndex = nextIndex;
+    renderGallery({ updateImage: false });
+    void animateGalleryFrames({
+      ...frames,
+      startCurrent: offset,
+      endCurrent: -direction * width,
+      startIncoming: offset + direction * width,
+      endIncoming: 0,
+      targetIndex: nextIndex,
+      velocity: galleryDrag.velocity,
+      onComplete: () =>
+        commitGalleryTransition(nextIndex, frames.currentFrame, frames.incomingFrame),
+    });
     return;
   }
 
-  void animateTrackToPosition(activeTrackPosition(), {
+  if (!galleryDrag.currentFrame || !galleryDrag.incomingFrame) {
+    mountActiveGalleryFrame();
+    return;
+  }
+  const direction = galleryDrag.direction;
+  void animateGalleryFrames({
+    currentFrame: galleryDrag.currentFrame,
+    incomingFrame: galleryDrag.incomingFrame,
+    startCurrent: offset,
+    endCurrent: 0,
+    startIncoming: offset + direction * width,
+    endIncoming: direction * width,
     velocity: galleryDrag.velocity,
     duration: 210,
+    onComplete: () => mountActiveGalleryFrame(galleryDrag.currentFrame),
   });
 }
 
@@ -900,15 +944,17 @@ galleryStage.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  cancelSlideAnimations({ preservePosition: true });
+  cancelSlideAnimations({ commitTarget: true });
   galleryDrag.pointerId = event.pointerId;
   galleryDrag.startX = event.clientX;
   galleryDrag.currentX = event.clientX;
   galleryDrag.lastX = event.clientX;
   galleryDrag.lastTime = event.timeStamp;
   galleryDrag.velocity = 0;
-  galleryDrag.basePosition = readTrackPosition();
   galleryDrag.startIndex = activeIndex;
+  galleryDrag.direction = 0;
+  galleryDrag.currentFrame = galleryTrack.querySelector(".gallery-frame.is-current");
+  galleryDrag.incomingFrame = null;
   galleryStage.setPointerCapture(event.pointerId);
   galleryStage.classList.add("is-dragging");
 });
@@ -923,15 +969,32 @@ galleryStage.addEventListener("pointermove", (event) => {
   galleryDrag.lastX = event.clientX;
   galleryDrag.lastTime = event.timeStamp;
 
-  const width = Math.max(galleryStage.clientWidth, 1);
+  const width = galleryStageWidth();
   const rawOffset = galleryDrag.currentX - galleryDrag.startX;
+  if (Math.abs(rawOffset) > 2) {
+    const direction = rawOffset < 0 ? 1 : -1;
+    const count = projects[activeProject].images.length;
+    const targetIndex = (galleryDrag.startIndex + direction + count) % count;
+    if (galleryDrag.direction !== direction || !galleryDrag.incomingFrame) {
+      const frames = prepareGalleryTransition(targetIndex, direction, rawOffset);
+      galleryDrag.direction = direction;
+      galleryDrag.currentFrame = frames.currentFrame;
+      galleryDrag.incomingFrame = frames.incomingFrame;
+    }
+  }
   const boundary = width;
   const overflow = Math.max(Math.abs(rawOffset) - boundary, 0);
   const resistedOffset =
     Math.abs(rawOffset) <= boundary
       ? rawOffset
       : Math.sign(rawOffset) * (boundary + rubberband(overflow, width));
-  setTrackPosition(galleryDrag.basePosition + resistedOffset);
+  if (galleryDrag.currentFrame) setFrameOffset(galleryDrag.currentFrame, resistedOffset);
+  if (galleryDrag.incomingFrame) {
+    setFrameOffset(
+      galleryDrag.incomingFrame,
+      resistedOffset + galleryDrag.direction * width,
+    );
+  }
 
   if (Math.abs(rawOffset) > 6) event.preventDefault();
 });
@@ -945,7 +1008,7 @@ galleryTrack.addEventListener("dragstart", (event) => event.preventDefault());
 window.addEventListener("resize", () => {
   if (!gallery.open || galleryDrag.pointerId !== null) return;
   cancelSlideAnimations();
-  setTrackPosition(activeTrackPosition());
+  mountActiveGalleryFrame();
 });
 
 gallery.addEventListener("cancel", (event) => {
